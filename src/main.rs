@@ -13,6 +13,7 @@ use yellowstone_grpc_proto::geyser::{
 struct SlotTracker {
     creator: String,
     create_ts: u64,
+    first_tx_ts: Option<u64>,
     last_tx_ts: u64,
     current_status: SlotStatus,
     // Счетчики транзакций по статусам (используем SlotStatus как ключ)
@@ -32,6 +33,7 @@ impl SlotTracker {
         Self {
             creator,
             create_ts: now,
+            first_tx_ts: None,
             last_tx_ts: now,
             current_status: status,
             tx_counts: HashMap::new(),
@@ -51,6 +53,7 @@ impl SlotTracker {
         Self {
             creator,
             create_ts: now,
+            first_tx_ts: Some(now), // Устанавливаем время первой транзакции
             last_tx_ts: now,
             current_status: default_status,
             tx_counts: HashMap::new(),
@@ -59,10 +62,17 @@ impl SlotTracker {
     }
     
     fn update_transaction(&mut self) {
-        self.last_tx_ts = SystemTime::now()
+        let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
+        
+        // Устанавливаем время первой транзакции, если это первая
+        if self.first_tx_ts.is_none() {
+            self.first_tx_ts = Some(now);
+        }
+        
+        self.last_tx_ts = now;
         
         // Если трекер создан транзакцией, увеличиваем tx_initiated_count
         if self.creator == "transaction" {
@@ -78,7 +88,13 @@ impl SlotTracker {
     }
     
     fn print_summary(&self, slot: u64) {
-        let duration = self.last_tx_ts - self.create_ts;
+        // Считаем время от первой транзакции, если есть, иначе от создания трекера
+        let duration = if let Some(first_tx) = self.first_tx_ts {
+            self.last_tx_ts - first_tx
+        } else {
+            self.last_tx_ts - self.create_ts
+        };
+        
         let total_txs: u64 = if self.creator == "transaction" {
             self.tx_initiated_count
         } else {
@@ -87,7 +103,7 @@ impl SlotTracker {
         
         if self.creator == "transaction" {
             // Для трекеров, созданных транзакциями
-            println!("FINALIZED slot:{} creator:{} duration:{}ms tx_initiated:{}", 
+            println!("FINALIZED slot:{} creator:{} tx_duration:{}ms tx_initiated:{}", 
                 slot,
                 self.creator,
                 duration,
@@ -108,10 +124,16 @@ impl SlotTracker {
                 status_counts.join(" ")
             };
             
-            println!("FINALIZED slot:{} creator:{} duration:{}ms total_txs:{} status_breakdown:[{}]", 
+            let tx_duration_info = if self.first_tx_ts.is_some() {
+                format!(" tx_duration:{}ms", duration)
+            } else {
+                " tx_duration:0ms".to_string()
+            };
+            
+            println!("FINALIZED slot:{} creator:{}{} total_txs:{} status_breakdown:[{}]", 
                 slot,
                 self.creator,
-                duration,
+                tx_duration_info,
                 total_txs,
                 status_details
             );
