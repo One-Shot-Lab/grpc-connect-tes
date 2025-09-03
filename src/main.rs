@@ -1,6 +1,10 @@
 mod accounts;
+mod metrics;
+mod server;
 
 use crate::accounts::get_accounts;
+use crate::metrics::Metrics;
+use crate::server::start_metrics_server;
 use anyhow::Result;
 use clap::Parser;
 use std::collections::HashMap;
@@ -71,11 +75,11 @@ impl SlotTracker {
         self.current_status = Some(new_status);
     }
 
-    fn print_summary(&self) {
-        let duration = if let Some(last_tx_ts) = self.last_tx_ts {
-            format!("{}ms", last_tx_ts - self.first_tx_ts.unwrap())
+    fn print_summary(&self, metrics: &Metrics) {
+        let duration_ms = if let Some(last_tx_ts) = self.last_tx_ts {
+            last_tx_ts - self.first_tx_ts.unwrap()
         } else {
-            "Unknown".to_string()
+            0
         };
 
         let total_txs = self.tx_counts.values().sum::<u64>() + self.tx_initiated_count;
@@ -90,16 +94,21 @@ impl SlotTracker {
             }
         }
 
+        // Обновляем Prometheus метрики
+        metrics.record_slot_finalized(duration_ms, self.tx_initiated_count, &self.tx_counts);
+
+        // Выводим в логи для отладки
         println!(
-            "FINALIZED slot:{} creator:{} duration:{} total_txs:{} tx_by_status:[{}]",
+            "FINALIZED slot:{} creator:{} duration:{}ms total_txs:{} tx_by_status:[{}]",
             self.slot,
             self.creator,
-            duration,
+            duration_ms,
             total_txs,
             status_counts.join(" ")
         );
     }
 }
+
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -112,6 +121,9 @@ struct Args {
 
     #[arg(long, help = "Skip TLS certificate verification (insecure)")]
     insecure: bool,
+
+    #[arg(long, default_value = "9090", help = "Prometheus metrics server port")]
+    metrics_port: u16,
 }
 
 #[tokio::main]
@@ -120,6 +132,16 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     let args = Args::parse();
+
+    // Создаем Prometheus registry и метрики
+    let (metrics, registry) = Metrics::new()?;
+
+    // Запускаем Prometheus metrics server
+    let registry_clone = registry.clone();
+    let metrics_port = args.metrics_port;
+    tokio::spawn(async move {
+        start_metrics_server(registry_clone, metrics_port).await;
+    });
 
     println!("Connecting to Yellowstone gRPC endpoint: {}", args.endpoint);
 
@@ -215,7 +237,7 @@ async fn main() -> Result<()> {
                         let status = SlotStatus::try_from(slot.status)?;
                         if status == SlotStatus::SlotFinalized {
                             if let Some(tracker) = slot_trackers.remove(&slot.slot) {
-                                tracker.print_summary();
+                                tracker.print_summary(&metrics);
                             }
                         } else {
                             let tracker = slot_trackers.entry(slot.slot).or_insert(
