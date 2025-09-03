@@ -75,7 +75,7 @@ impl SlotTracker {
         self.current_status = Some(new_status);
     }
 
-    fn print_summary(&self, metrics: &Metrics) {
+    fn print_summary(&self, event: &str, metrics: &Metrics) {
         let duration_ms = if let Some(last_tx_ts) = self.last_tx_ts {
             last_tx_ts - self.first_tx_ts.unwrap()
         } else {
@@ -99,7 +99,7 @@ impl SlotTracker {
 
         // Выводим в логи для отладки
         println!(
-            "FINALIZED slot:{} creator:{} duration:{}ms total_txs:{} tx_by_status:[{}]",
+            "{event} slot:{} creator:{} duration:{}ms total_txs:{} tx_by_status:[{}]",
             self.slot,
             self.creator,
             duration_ms,
@@ -235,9 +235,9 @@ async fn main() -> Result<()> {
                     }
                     Some(subscribe_update::UpdateOneof::Slot(slot)) => {
                         let status = SlotStatus::try_from(slot.status)?;
-                        if status == SlotStatus::SlotFinalized {
+                        if status == SlotStatus::SlotFinalized || status == SlotStatus::SlotDead {
                             if let Some(tracker) = slot_trackers.remove(&slot.slot) {
-                                tracker.print_summary(&metrics);
+                                tracker.print_summary(status.as_str_name(), &metrics);
                             }
                         } else {
                             let tracker = slot_trackers.entry(slot.slot).or_insert(
